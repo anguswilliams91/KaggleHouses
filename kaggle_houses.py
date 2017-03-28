@@ -14,6 +14,8 @@ from keras.models import Sequential
 from keras.layers import Dense
 from keras.wrappers.scikit_learn import KerasRegressor
 
+#first attempt at a kaggle competition, experiment with different regressors and follow some of the advice in 
+#kernels.
 
 def load_and_preprocess():
 
@@ -237,9 +239,8 @@ def model_bagging_predictions(X_train,X_test,y_train,test_IDs,make_submission=Tr
     """
 
 
-    lasso = fit_lasso(X_train,y_train)
-    forest = fit_randomforest(X_train,y_train)
-
+    lasso = fit_lasso(X_train,y_train,alphas=[0.0001,0.0002,0.0003,0.0004,0.0005,0.0006])
+    forest = fit_randomforest(X_train,y_train,n_estimators=200)
 
     scaler = RobustScaler()
     X_transformed = scaler.fit_transform( np.vstack((X_train,X_test)) )
@@ -255,10 +256,20 @@ def model_bagging_predictions(X_train,X_test,y_train,test_IDs,make_submission=Tr
 
     if make_submission:
         predicted_prices = np.exp(y_pred)-1.
-        submission = pd.DataFrame({'id':test_IDs,'SalePrice':predicted_prices})
+        submission = pd.DataFrame({'Id':test_IDs,'SalePrice':predicted_prices})
         return y_pred,y_lasso,y_forest,y_neural_net,submission
     else:
         return y_pred,y_lasso,y_forest,y_neural_net
+
+def main():
+    #fit the three models and then save the submission file
+    np.random.seed(130)
+    X_train,X_test,y_train,ids = load_and_preprocess()
+    yp,yl,yrf,ynn,sub = model_bagging_predictions(X_train,X_test,y_train,ids)
+    sub.to_csv("data/submit.csv",index=False)
+
+if __name__ == "__main__":
+    main()
 
 
 
