@@ -6,13 +6,15 @@ import pandas as pd
 from scipy.stats import skew
 
 from sklearn.preprocessing import RobustScaler
-from sklearn.linear_model import LassoCV
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LassoCV,RidgeCV
+from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor, GradientBoostingRegressor 
+from sklearn.model_selection import GridSearchCV
+from sklearn.svm import SVR
 from sklearn.model_selection import cross_val_score, train_test_split
-
 from keras.models import Sequential
 from keras.layers import Dense
 from keras.wrappers.scikit_learn import KerasRegressor
+from keras.layers.core import Dropout
 
 #first attempt at a kaggle competition, experiment with different regressors and follow some of the advice in 
 #kernels.
@@ -65,7 +67,7 @@ def load_and_preprocess():
     data[skewed] = np.log1p(data[skewed])
 
     #if numerical values are missing, replace with median from that column
-    data = data.fillna(data.median())
+    data = data.fillna(data.mean())
 
     X_train = data[:train.shape[0]].as_matrix()
     X_test = data[train.shape[0]:].as_matrix()
@@ -119,6 +121,29 @@ def fit_lasso(X,y,**kwargs):
     model.fit(X,y)
     return model
 
+def fit_ridge(X,y,**kwargs):
+    """
+    Fit a linear model to the data with L2 regularisation
+
+    Arguments
+    ---------
+
+    X: numpy.array
+        feature matrix for the training data
+    y: numpy.array
+        label matrix for the training data
+
+    Returns
+    -------
+
+    model: sklearn.linear_model.RidgeCV
+        the L2 regularised linear model
+    """
+    #note that alpha ~ 0.0003 seems to work best 
+    model = RidgeCV(**kwargs)
+    model.fit(X,y)
+    return model
+
 def fit_randomforest(X,y,**kwargs):
 
     """
@@ -168,105 +193,180 @@ def fit_neural_network(X,y,scale=False):
 
     model: KerasRegressor
         neural network
-
-    X_train: numpy.array
-        feature matrix for the training data
-
-    y_train: numpy.array
-        label matrix for the training data
-
-    X_val: numpy.array
-        feature matrix for the validation data
-
-    y_val: numpy.array
-        label matrix for the validation data
     """
 
     if scale:
         X = RobustScaler().fit_transform(X)
 
-    X_train,X_val,y_train,y_val = train_test_split(X,y,random_state=0)
+    #X_train,X_val,y_train,y_val = train_test_split(X,y,random_state=0)
 
     def build_model(): 
         model = Sequential()
-        model.add(Dense(13,input_dim=X.shape[1],kernel_initializer='normal',activation='relu'))
-        model.add(Dense(6,input_dim=X.shape[1],kernel_initializer='normal',activation='relu'))
+        model.add(Dense(500,input_dim=X.shape[1],kernel_initializer='normal',activation='relu'))
+        model.add(Dropout(0.05))
         model.add(Dense(1,kernel_initializer='normal'))
         model.compile(loss='mean_absolute_error',optimizer='adam')
         return model
 
-    model = KerasRegressor(build_fn=build_model,epochs=100,batch_size=30)
-    model.fit(X_train,y_train)
+    model = KerasRegressor(build_fn=build_model,epochs=200,batch_size=100)
+    model.fit(X,y,validation_split=0.25)
 
-    return model,X_train,y_train,X_val,y_val
+    return model#,X_train,y_train,X_val,y_val
 
-def model_bagging_predictions(X_train,X_test,y_train,test_IDs,make_submission=True):
+def fit_gradient_boost(X,y,**kwargs):
 
     """
-    Use lasso, RF and NN models at once and average the results to obtain
-    (hopefully) less biased predictions.
+    Fit a gradient boosting regressor to the data
 
     Arguments
     ---------
 
-    X_train: numpy.array
+    X: numpy.array
         feature matrix for the training data
 
-    X_test: numpy.array
-        feature matrix for the test data
-
-    y_train: numpy.array
+    y: numpy.array
         label matrix for the training data
 
     Returns
     -------
 
-    y_pred: numpy.array
-        averaged prediction from all three regressors
+    model: sklearn.ensemble.GradientBoostingRegressor
+        Gradient boosting regressor
 
-    y_lasso: numpy.array
-        lasso prediction
-
-    y_forest: numpy.array
-        random forest prediction
-
-    y_neural_net: numpy.array
-        neural net prediction 
-
-    submission: pandas.DataFrame
-        (if make_submission is True)
-        dataframe with two columns, ID and predicted sale price for test set
     """
 
+    model = GradientBoostingRegressor(**kwargs)
+    model.fit(X,y)
 
-    lasso = fit_lasso(X_train,y_train,alphas=[0.0001,0.0002,0.0003,0.0004,0.0005,0.0006])
-    forest = fit_randomforest(X_train,y_train,n_estimators=200)
+    return model
 
-    scaler = RobustScaler()
-    X_transformed = scaler.fit_transform( np.vstack((X_train,X_test)) )
-    X_train_transformed = X_transformed[:X_train.shape[0]]
-    X_test_transformed = X_transformed[X_train.shape[0]:] 
-    neural_net,_,__,___,____ = fit_neural_network(X_train_transformed,y_train)
+def fit_SVR(X,y,scale=True,**kwargs):
 
-    y_lasso = lasso.predict(X_test)
-    y_forest = forest.predict(X_test)
-    y_neural_net = neural_net.predict(X_test_transformed)
+    """
+    Fit a Support Vector Regressor to the data
 
-    y_pred = (1./3.)*(y_lasso+y_forest+y_neural_net)
+    Arguments
+    ---------
 
-    if make_submission:
-        predicted_prices = np.exp(y_pred)-1.
-        submission = pd.DataFrame({'Id':test_IDs,'SalePrice':predicted_prices})
-        return y_pred,y_lasso,y_forest,y_neural_net,submission
-    else:
-        return y_pred,y_lasso,y_forest,y_neural_net
+    X: numpy.array
+        feature matrix for the training data
+
+    y: numpy.array
+        label matrix for the training data
+
+    Returns
+    -------
+
+    model: sklearn.svr.SVR
+        Best performing SVR based on cross validation
+
+    """
+
+    if scale: Xs = RobustScaler().fit_transform(X)
+    params = {'kernel':['rbf','linear','poly'],'C':[0.001,0.01,0.1,1.]}
+    model = GridSearchCV(SVR(),params,n_jobs=6,verbose=10)
+    model.fit(Xs,y)
+
+    return model
+
+def fit_extra_trees(X,y,**kwargs):
+
+    """
+    Fit a extra trees regressor to the data
+
+    Arguments
+    ---------
+
+    X: numpy.array
+        feature matrix for the training data
+
+    y: numpy.array
+        label matrix for the training data
+
+    Returns
+    -------
+
+    model: sklearn.ensemble.ExtraTreesRegressor
+        random forest regressor
+
+    """
+
+    model = ExtraTreesRegressor(**kwargs)
+    model.fit(X,y)
+    return model
+
+
+def model_bagging_predictions(X_train,X_test,y_train,test_IDs):
+
+    """
+    Fit a bunch of estimators, then fit a meta-estimator to them.
+
+    Arguments
+    ---------
+
+    X_train: numpy.array
+        array containing features of training set
+
+    X_test: numpy.array
+        array containing features of test set
+
+    y: numpy.array
+        array containing labels for training set
+
+    test_IDs: numpy.array
+        IDs for test set, for submission
+
+    Returns
+    -------
+
+    submission: pandas.DataFrame
+        A pandas dataframe for submitting
+
+    """
+
+    X1,X2,y1,y2 = train_test_split(X_train,y_train) 
+    rs = RobustScaler()
+    X1s = rs.fit_transform(X1)
+    X2s = rs.transform(X2)
+    lasso = fit_lasso(X1,y1,alphas=np.array([0.0003]))
+    rf = fit_randomforest(X1,y1,n_estimators=200)
+    gb = fit_gradient_boost(X1,y1,n_estimators=200)
+    ridge = fit_ridge(X1,y1,alphas=np.linspace(1.,20.,19))
+    svr = fit_SVR(X1s,y1)
+    et = fit_extra_trees(X1,y1,n_estimators=200)
+    models = {'lasso':lasso, 'rf':rf, 'gb':gb, 'svr':svr, 'ridge':ridge, 'et':et}
+    predictions = np.zeros((X2.shape[0],len(models.keys())))
+    for i,name in enumerate(models.keys()):
+        print(name)
+        if name != 'svr':
+            predictions[:,i] = models[name].predict(X2)
+        else:
+            predictions[:,i] = models[name].predict(X2s)
+
+    X2_meta = np.concatenate((X2,predictions),1)
+    lasso_meta = fit_lasso(X2_meta,y2,alphas=np.linspace(0.0005,0.005,10))
+
+    #now predict for the training set
+    Xts = rs.transform(X_test)
+    predictions_test = np.zeros((X_test.shape[0],len(models.keys())))
+    for i,name in enumerate(models.keys()):
+        print(name)
+        if name != 'svr':
+            predictions_test[:,i] = models[name].predict(X_test)
+        else:
+            predictions_test[:,i] = models[name].predict(Xts)
+
+    X_test_meta = np.concatenate((X_test,predictions_test),1)
+    y_pred = lasso_meta.predict(X_test_meta)
+
+    return pd.DataFrame({'Id':test_IDs, 'SalePrice': np.exp(y_pred)-1.})       
 
 def main():
-    #fit the three models and then save the submission file
-    np.random.seed(130)
+    np.random.seed(20)
     X_train,X_test,y_train,ids = load_and_preprocess()
-    yp,yl,yrf,ynn,sub = model_bagging_predictions(X_train,X_test,y_train,ids)
-    sub.to_csv("data/submit.csv",index=False)
+    submission = model_bagging_predictions(X_train,X_test,y_train,ids)
+    submission.to_csv("data/submission.csv",index=False)
+
 
 if __name__ == "__main__":
     main()
